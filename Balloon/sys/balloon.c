@@ -84,7 +84,7 @@ BalloonInit(
         status = VirtIOWdfInitQueues(&devCtx->VDevice, nvqs, vqs, params);
         if (NT_SUCCESS(status))
         {
-            devCtx->InfVirtQueue = vqs[0];
+            devCtx->infVirtQueue = vqs[0];
             devCtx->DefVirtQueue = vqs[1];
 
             if (nvqs == 3)
@@ -212,7 +212,7 @@ BalloonFill(
     RtlCopyMemory(ctx->pfns_table, MmGetMdlPfnArray(pPageMdl),
         ctx->num_pfns * sizeof(PFN_NUMBER));
 
-    BalloonTellHost(WdfDevice, ctx->InfVirtQueue);
+    BalloonTellHost(WdfDevice, ctx->infVirtQueue);
 
     TraceEvents(TRACE_LEVEL_VERBOSE, DBG_HW_ACCESS, "<-- %s\n", __FUNCTION__);
 }
@@ -279,15 +279,15 @@ BalloonTellHost(
     sg.physAddr = VirtIOWdfDeviceGetPhysicalAddress(&devCtx->VDevice.VIODevice, devCtx->pfns_table);
     sg.length = sizeof(devCtx->pfns_table[0]) * devCtx->num_pfns;
 
-    WdfSpinLockAcquire(devCtx->InfDefQueueLock);
+    WdfSpinLockAcquire(devCtx->infVirtQueueLock);
     if (virtqueue_add_buf(vq, &sg, 1, 0, devCtx, NULL, 0) < 0)
     {
         TraceEvents(TRACE_LEVEL_ERROR, DBG_HW_ACCESS, "<-> %s :: Cannot add buffer\n", __FUNCTION__);
-        WdfSpinLockRelease(devCtx->InfDefQueueLock);
+        WdfSpinLockRelease(devCtx->infVirtQueueLock);
         return;
     }
     do_notify = virtqueue_kick_prepare(vq);
-    WdfSpinLockRelease(devCtx->InfDefQueueLock);
+    WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
     if (do_notify)
     {
@@ -296,7 +296,7 @@ BalloonTellHost(
 
     timeout.QuadPart = Int32x32To64(1000, -10000);
     status = KeWaitForSingleObject (
-                &devCtx->HostAckEvent,
+                &devCtx->hostAcknowledge,
                 Executive,
                 KernelMode,
                 FALSE,

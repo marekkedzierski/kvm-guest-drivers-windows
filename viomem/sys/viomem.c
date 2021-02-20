@@ -74,7 +74,7 @@ ViomemInit(
 	status = VirtIOWdfInitQueues(&devCtx->VDevice, nvqs, vqs, params);
 	if (NT_SUCCESS(status))
 	{
-		devCtx->InfVirtQueue = vqs[0];
+		devCtx->infVirtQueue = vqs[0];
 		VirtIOWdfSetDriverOK(&devCtx->VDevice);
 	}
 	else
@@ -111,7 +111,7 @@ ViomemTerminate(
 // Function used for displaying debugging responses from the device.
 //
 
-void inline DumpViomemResponseType(virtio_mem_resp	*MemoryResponse)
+VOID inline DumpViomemResponseType(virtio_mem_resp	*MemoryResponse)
 {
 	switch (MemoryResponse->type)
 	{
@@ -183,12 +183,12 @@ BOOLEAN SendUnPlugRequest(
 		devCtx->MemoryResponse);
 	sg[1].length = sizeof(virtio_mem_resp);
 
-	WdfSpinLockAcquire(devCtx->InfDefQueueLock);
-	result = virtqueue_add_buf(devCtx->InfVirtQueue, sg, 1, 1, devCtx, NULL, 0);
+	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+	result = virtqueue_add_buf(devCtx->infVirtQueue, sg, 1, 1, devCtx, NULL, 0);
 
 	if (result < 0)
 	{
-		WdfSpinLockRelease(devCtx->InfDefQueueLock);
+		WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
 		TraceEvents(TRACE_LEVEL_ERROR, DBG_HW_ACCESS, 
 			"%s: Cannot add buffer = [0x%x]\n", __FUNCTION__, result);
@@ -196,23 +196,23 @@ BOOLEAN SendUnPlugRequest(
 	}
 	else
 	{
-		do_notify = virtqueue_kick_prepare(devCtx->InfVirtQueue);
+		do_notify = virtqueue_kick_prepare(devCtx->infVirtQueue);
 	}
 
-	WdfSpinLockRelease(devCtx->InfDefQueueLock);
+	WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
 	if (do_notify)
 	{
-		virtqueue_notify(devCtx->InfVirtQueue);
+		virtqueue_notify(devCtx->infVirtQueue);
 	}
 
 	//
-	// Wait for device response. If timeout return false;
+	// Wait for device response. If timeout return false
 	//
 
 	timeout.QuadPart = Int32x32To64(1000, -10000);
 	status = KeWaitForSingleObject(
-		&devCtx->HostAckEvent,
+		&devCtx->hostAcknowledge,
 		Executive,
 		KernelMode,
 		FALSE,
@@ -224,10 +224,10 @@ BOOLEAN SendUnPlugRequest(
 		return FALSE;
 	}
 
-	WdfSpinLockAcquire(devCtx->InfDefQueueLock);
-	if (virtqueue_has_buf(devCtx->InfVirtQueue))
+	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+	if (virtqueue_has_buf(devCtx->infVirtQueue))
 	{
-		buffer = virtqueue_get_buf(devCtx->InfVirtQueue, &len);
+		buffer = virtqueue_get_buf(devCtx->infVirtQueue, &len);
 		if (buffer)
 		{
 			TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, 
@@ -238,23 +238,19 @@ BOOLEAN SendUnPlugRequest(
 			TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP,
 				"%s Buffer got, len = [%d]!\n", __FUNCTION__, len);
 
+			WdfSpinLockRelease(devCtx->infVirtQueueLock);
 			return FALSE;
 		}
 	}
 
-	WdfSpinLockRelease(devCtx->InfDefQueueLock);
+	WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
-#ifdef __DUMP_RESPONSE_TYPE__
+#ifdef __DUMP_RESPONSE__
 	DumpViomemResponseType(devCtx->MemoryResponse);
 #endif
 
 	if (devCtx->MemoryResponse->type != VIRTIO_MEM_RESP_ACK)
 	{
-
-#if 0
-		DumpViomemResponseType(devCtx->MemoryResponse);
-#endif
-
 		return FALSE;
 	}
 
@@ -277,13 +273,14 @@ BOOLEAN SendPlugRequest(
 	__virtio64 Address,
 	__virtio16 NumberOfBlocks)
 {
-	PDEVICE_CONTEXT devCtx = GetDeviceContext(WdfDevice);
 	VIO_SG              sg[2];
 	LARGE_INTEGER       timeout = { 0 };
-	bool                do_notify;
+	bool                doNotify;
 	NTSTATUS            status;
-	PVOID                 buffer;
+	PVOID               buffer;
 	UINT len;
+
+	PDEVICE_CONTEXT devCtx = GetDeviceContext(WdfDevice);
 	
 	//
 	// Fill plug request and response command buffers with zeros before submission.
@@ -319,17 +316,17 @@ BOOLEAN SendPlugRequest(
 	// preparation release the spinlock and notify queue about transmission request.
 	//
 
-	WdfSpinLockAcquire(devCtx->InfDefQueueLock);
-	if (virtqueue_add_buf(devCtx->InfVirtQueue, sg, 1, 1, devCtx, NULL, 0) < 0)
+	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+	if (virtqueue_add_buf(devCtx->infVirtQueue, sg, 1, 1, devCtx, NULL, 0) < 0)
 	{
 		TraceEvents(TRACE_LEVEL_ERROR, DBG_HW_ACCESS, "%s Cannot add buffer\n", __FUNCTION__);
 	}
-	do_notify = virtqueue_kick_prepare(devCtx->InfVirtQueue);
-	WdfSpinLockRelease(devCtx->InfDefQueueLock);
+	doNotify = virtqueue_kick_prepare(devCtx->infVirtQueue);
+	WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
-	if (do_notify)
+	if (doNotify)
 	{
-		virtqueue_notify(devCtx->InfVirtQueue);
+		virtqueue_notify(devCtx->infVirtQueue);
 	}
 
 	//
@@ -338,27 +335,27 @@ BOOLEAN SendPlugRequest(
 
 	timeout.QuadPart = Int32x32To64(1000, -10000);
 	status = KeWaitForSingleObject(
-		&devCtx->HostAckEvent,
+		&devCtx->hostAcknowledge,
 		Executive,
 		KernelMode,
 		FALSE,
 		&timeout);
 	ASSERT(NT_SUCCESS(status));
 
-	WdfSpinLockAcquire(devCtx->InfDefQueueLock);
-	if (virtqueue_has_buf(devCtx->InfVirtQueue))
+	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+	if (virtqueue_has_buf(devCtx->infVirtQueue))
 	{
 		// 
 		// Remove buffer from the queue.
 		//
 
-		buffer = virtqueue_get_buf(devCtx->InfVirtQueue, &len);
+		buffer = virtqueue_get_buf(devCtx->infVirtQueue, &len);
 		if (buffer)
 		{
 			TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Buffer got, len = [%d]!\n", len);
 		}
 	}
-	WdfSpinLockRelease(devCtx->InfDefQueueLock);
+	WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
 	// 
 	// If there was no response from the device or device returned error
@@ -371,13 +368,12 @@ BOOLEAN SendPlugRequest(
 		return FALSE;
 	}
 
-	if (devCtx->MemoryResponse->type != VIRTIO_MEM_RESP_ACK)
-	{
-
-#if 0
-		DumpViomemResponseType(devCtx->MemoryResponse);
+#ifdef __DUMP_RESPONSE__
+	DumpViomemResponseType(devCtx->MemoryResponse);
 #endif
 
+	if (devCtx->MemoryResponse->type != VIRTIO_MEM_RESP_ACK)
+	{
 		return FALSE;
 	}
 	
@@ -411,7 +407,7 @@ ULONG FindConsecutivePagesCountMDL(PPFN_NUMBER Pages, ULONG Remaining)
 
 //
 // Function converts MDL returned by MmAllocateNodePagesForMdlEx call to memory 
-// ranges  call. 
+// ranges.
 //
 
 ULONG GetMemoryRangesFromMdl(PMDL Mdl, PHYSICAL_MEMORY_RANGE MemoryRanges[])
@@ -487,10 +483,11 @@ ULONG GetMemoryRangesFromMdl(PMDL Mdl, PHYSICAL_MEMORY_RANGE MemoryRanges[])
 }
 
 //
-// Function returns number of bytes allocated in memory range
+// Function returns number of megabytes allocated in bitmap representing
+// region_size
 //
 
-ULONG GetNumberOfBytesAllocatedInBitmap(RTL_BITMAP *Bitmap, ULONG BlockSize)
+ULONG GetNumberOfMBytesAllocatedInBitmap(RTL_BITMAP *Bitmap, ULONG BlockSize)
 {
 	ULONG number = RtlNumberOfSetBits(Bitmap);
 	number = (number * BlockSize) / 1048576;
@@ -555,7 +552,7 @@ void DumpBitmapMemoryRanges(LONGLONG BaseAddress,
 // Function resizes given bitmap. Currently not used.
 //
 
-void ResizeBitmap(RTL_BITMAP *Bitmap, PULONG BitmapBuffer, ULONG NewSizeOfBitmap)
+VOID ResizeBitmap(RTL_BITMAP *Bitmap, PULONG BitmapBuffer, ULONG NewSizeOfBitmap)
 {
 	//
 	// Save previous size of bitmap.
@@ -584,7 +581,7 @@ void ResizeBitmap(RTL_BITMAP *Bitmap, PULONG BitmapBuffer, ULONG NewSizeOfBitmap
 // representation.
 //
 
-void DeallocateMemoryRangeInMemoryBitmap(LONGLONG BaseAddress,
+VOID DeallocateMemoryRangeInMemoryBitmap(LONGLONG BaseAddress,
 	PPHYSICAL_MEMORY_RANGE RangeToDeallocate,
 	RTL_BITMAP *Bitmap,
 	ULONG BlockSizeBytes)
@@ -605,11 +602,11 @@ void DeallocateMemoryRangeInMemoryBitmap(LONGLONG BaseAddress,
 
 //
 // Helper function that dumps system memory ranges.
-// Note: after each succesful memory plug or memory unplug memory system ranges
+// Note: after each succesful memory plug or memory unplug, the system memory ranges
 //       are updated so this function is for just obserability purposes.
 //
 
-void DumpSystemMemoryRanges(LONGLONG Start, LONGLONG End)
+VOID DumpSystemMemoryRanges(LONGLONG Start, LONGLONG End)
 {
 	PPHYSICAL_MEMORY_RANGE ranges;
 	ULONG currentRange = 0;
@@ -726,7 +723,7 @@ inline BOOLEAN FindFreeMemoryRangeInBitmap(RTL_BITMAP *Bitmap,
 	return FALSE;
 }
 
-inline void AllocateMemoryRangeInMemoryBitmap(LONGLONG BaseAddress,
+inline VOID AllocateMemoryRangeInMemoryBitmap(LONGLONG BaseAddress,
 	PPHYSICAL_MEMORY_RANGE RangeToAllocate,
 	RTL_BITMAP *Bitmap,
 	ULONG BlockSize)
@@ -843,21 +840,21 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 	BOOLEAN result = FALSE;
 	PHYSICAL_MEMORY_RANGE range = { 0 };
 	PHYSICAL_ADDRESS highAddress = { 0 };
+	SIZE_T amount = 0;
 
 	PDEVICE_CONTEXT devCtx = GetDeviceContext(Device);
 	PHYSICAL_ADDRESS skip = { 0 };
 	PHYSICAL_ADDRESS address = { 0 };
 
- 
-
 	address.QuadPart = (LONGLONG)Configuration->addr;
 
+#if 0
 	DumpSystemMemoryRanges(Configuration->addr,
 		Configuration->addr + Configuration->plugged_size - 1);
-
+#endif
+	
 	__u64 sizeDifference = Configuration->plugged_size - Configuration->requested_size;
 
-	SIZE_T amount = 0;
 	amount = (LONGLONG)sizeDifference;
 
 	//
@@ -967,8 +964,7 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 // Main worker thread that processed virtio-mem configuration changes.
 //
 
-VOID
-ViomemWorkerThread(
+VOID ViomemWorkerThread(
 	IN PVOID pContext
 )
 {

@@ -171,7 +171,7 @@ BalloonDeviceAdd(
     devCtx->MemStats = NULL;
 
 
-    KeInitializeEvent(&devCtx->HostAckEvent,
+    KeInitializeEvent(&devCtx->hostAcknowledge,
                       SynchronizationEvent,
                       FALSE
                       );
@@ -191,7 +191,7 @@ BalloonDeviceAdd(
 
     status = WdfSpinLockCreate(
         &attributes,
-        &devCtx->InfDefQueueLock
+        &devCtx->infVirtQueueLock
         );
     if (!NT_SUCCESS(status))
     {
@@ -511,7 +511,7 @@ BalloonEvtDeviceSurpriseRemoval(IN WDFDEVICE Device)
     PAGED_CODE();
 
     devCtx->SurpriseRemoval = TRUE;
-    KeSetEvent(&devCtx->HostAckEvent, EVENT_INCREMENT, FALSE);
+    KeSetEvent(&devCtx->hostAcknowledge, EVENT_INCREMENT, FALSE);
 }
 
 BOOLEAN
@@ -556,8 +556,8 @@ BalloonInterruptDpc(
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_DPC, "--> %s\n", __FUNCTION__);
 
-    WdfSpinLockAcquire(devCtx->InfDefQueueLock);
-    if (virtqueue_get_buf(devCtx->InfVirtQueue, &len))
+    WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+    if (virtqueue_get_buf(devCtx->infVirtQueue, &len))
     {
         bHostAck = TRUE;
     }
@@ -565,11 +565,11 @@ BalloonInterruptDpc(
     {
         bHostAck = TRUE;
     }
-    WdfSpinLockRelease(devCtx->InfDefQueueLock);
+    WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
     if(bHostAck)
     {
-        KeSetEvent (&devCtx->HostAckEvent, EVENT_INCREMENT, FALSE);
+        KeSetEvent (&devCtx->hostAcknowledge, EVENT_INCREMENT, FALSE);
     }
 
     if (devCtx->StatVirtQueue)

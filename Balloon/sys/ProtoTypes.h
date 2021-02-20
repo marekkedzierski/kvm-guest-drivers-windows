@@ -67,14 +67,14 @@ typedef struct _DEVICE_CONTEXT {
     PKEVENT                 evLowMem;
     HANDLE                  hLowMem;
     VIRTIO_WDF_DRIVER       VDevice;
-    PVIOQUEUE               InfVirtQueue;
+    PVIOQUEUE               infVirtQueue;
     PVIOQUEUE               DefVirtQueue;
     PVIOQUEUE               StatVirtQueue;
 
     WDFSPINLOCK             StatQueueLock;
-    WDFSPINLOCK             InfDefQueueLock;
+    WDFSPINLOCK             infVirtQueueLock;
 
-    KEVENT                  HostAckEvent;
+    KEVENT                  hostAcknowledge;
 
     volatile ULONG          num_pages;
     ULONG                   num_pfns;
@@ -199,8 +199,8 @@ EnableInterrupt(
     PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
     UNREFERENCED_PARAMETER(WdfInterrupt);
 
-    virtqueue_enable_cb(devCtx->InfVirtQueue);
-    virtqueue_kick(devCtx->InfVirtQueue);
+    virtqueue_enable_cb(devCtx->infVirtQueue);
+    virtqueue_kick(devCtx->infVirtQueue);
     virtqueue_enable_cb(devCtx->DefVirtQueue);
     virtqueue_kick(devCtx->DefVirtQueue);
 

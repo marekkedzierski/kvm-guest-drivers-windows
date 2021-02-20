@@ -128,14 +128,14 @@ ViomemDeviceAdd(
 	memset(&devCtx->MemoryConfiguration, 0, sizeof(devCtx->MemoryConfiguration));
     devCtx->finishProcessing = FALSE;
     
-    KeInitializeEvent(&devCtx->HostAckEvent, SynchronizationEvent, FALSE);
+    KeInitializeEvent(&devCtx->hostAcknowledge, SynchronizationEvent, FALSE);
 
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = device;
 
     status = WdfSpinLockCreate(
         &attributes,
-        &devCtx->InfDefQueueLock
+        &devCtx->infVirtQueueLock
         );
     if (!NT_SUCCESS(status))
     {
@@ -465,17 +465,17 @@ ViomemDPC(
 
 	TraceEvents(TRACE_LEVEL_INFORMATION, DBG_INIT, "%s Entry\n", __FUNCTION__);
 
-    WdfSpinLockAcquire(devCtx->InfDefQueueLock);
+    WdfSpinLockAcquire(devCtx->infVirtQueueLock);
     
-	if (virtqueue_has_buf(devCtx->InfVirtQueue))
+	if (virtqueue_has_buf(devCtx->infVirtQueue))
 	{
         bHostAck = TRUE;
     }
-    WdfSpinLockRelease(devCtx->InfDefQueueLock);
+    WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
     if(bHostAck)
     {
-        KeSetEvent (&devCtx->HostAckEvent, EVENT_INCREMENT, FALSE);
+        KeSetEvent (&devCtx->hostAcknowledge, EVENT_INCREMENT, FALSE);
     }
 
     if(devCtx->Thread)

@@ -49,10 +49,10 @@ typedef struct VirtIOBufferDescriptor VIO_SG, *PVIO_SG;
 typedef struct _DEVICE_CONTEXT {
     WDFINTERRUPT            WdfInterrupt;
     VIRTIO_WDF_DRIVER       VDevice;
-    PVIOQUEUE               InfVirtQueue;
-    WDFSPINLOCK             InfDefQueueLock;
+    PVIOQUEUE               infVirtQueue;
+    WDFSPINLOCK             infVirtQueueLock;
 
-    KEVENT                  HostAckEvent;
+    KEVENT                  hostAcknowledge;
 
 	virtio_mem_req			*plugRequest;
 	virtio_mem_config		MemoryConfiguration;
@@ -149,8 +149,8 @@ EnableInterrupt(
     PDEVICE_CONTEXT devCtx = (PDEVICE_CONTEXT)Context;
     UNREFERENCED_PARAMETER(WdfInterrupt);
 
-    virtqueue_enable_cb(devCtx->InfVirtQueue);
-    virtqueue_kick(devCtx->InfVirtQueue);
+    virtqueue_enable_cb(devCtx->infVirtQueue);
+    virtqueue_kick(devCtx->infVirtQueue);
 
 }
 
@@ -160,7 +160,7 @@ DisableInterrupt(
     IN PDEVICE_CONTEXT devCtx
     )
 {
-    virtqueue_disable_cb(devCtx->InfVirtQueue);
+    virtqueue_disable_cb(devCtx->infVirtQueue);
 }
 
 
