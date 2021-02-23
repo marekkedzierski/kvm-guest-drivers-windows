@@ -46,6 +46,20 @@ DEFINE_GUID(GUID_DEVINTERFACE_VIOMEM,
 typedef struct virtqueue VIOQUEUE, *PVIOQUEUE;
 typedef struct VirtIOBufferDescriptor VIO_SG, *PVIO_SG;
 
+//
+// virtio-mem driver processing states
+//
+// VIOMEM_PROCESS_STATE_INIT - state referes to the checking if 
+// a device still has memory plugged (plugged_size > 0) during
+// driver initilization.
+// 
+// VIOMEM_PROCESS_STATE_RUNNING - state refers to a normal processing
+// of plug/unplug requests by the driver.
+//
+
+#define VIOMEM_PROCESS_STATE_INIT    	0
+#define VIOMEM_PROCESS_STATE_RUNNING    2
+
 typedef struct _DEVICE_CONTEXT {
     WDFINTERRUPT            WdfInterrupt;
     VIRTIO_WDF_DRIVER       VDevice;
@@ -64,6 +78,7 @@ typedef struct _DEVICE_CONTEXT {
     PKTHREAD                Thread;
     BOOLEAN                 finishProcessing;
 
+	UINT					state;
 	//
 	// Memory ranges used by converting from MDL to Ranges
 	// todo: add dynamic allocation

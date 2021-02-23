@@ -238,8 +238,14 @@ ViomemEvtDevicePrepareHardware(
 		status = STATUS_INSUFFICIENT_RESOURCES;
 	}
 	
-	RtlFillMemory(&devCtx->memoryBitmapHandle, sizeof(RTL_BITMAP), 0);
+	RtlFillMemory(&devCtx->memoryBitmapHandle, sizeof(RTL_BITMAP), 0);	
 	devCtx->bitmapBuffer = NULL;
+
+	//
+	// Set processing state to initialization.
+	//
+
+	devCtx->state = VIOMEM_PROCESS_STATE_INIT;
 
     TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "%s Return\n", __FUNCTION__);
     return status;

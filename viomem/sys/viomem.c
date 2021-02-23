@@ -36,9 +36,7 @@
 #endif
 
 NTSTATUS
-ViomemInit(
-    IN WDFOBJECT    WdfDevice
-            )
+ViomemInit(IN WDFOBJECT    WdfDevice)
 {
     NTSTATUS status = STATUS_SUCCESS;
     PDEVICE_CONTEXT devCtx = GetDeviceContext(WdfDevice);
@@ -89,10 +87,7 @@ ViomemInit(
     return status;
 }
 
-VOID
-ViomemTerminate(
-    IN WDFOBJECT    WdfDevice
-    )
+VOID ViomemTerminate(IN WDFOBJECT    WdfDevice)
 {
     PDEVICE_CONTEXT     devCtx = GetDeviceContext(WdfDevice);
 
@@ -133,6 +128,151 @@ VOID inline DumpViomemResponseType(virtio_mem_resp	*MemoryResponse)
 }
 
 //
+// Function sends VIRTIO_MEM_REQ_UNPLUG_ALL request to a device.
+//	
+//	Arguments: WdfDevice:		device
+//			  													
+//  Return value: TRUE if all memory ranges were unplugged (device returned ACK
+//				  and plugged_size was set to zero)
+//				  FALSE if timeout occured or device returned an error code or 
+//				  device returned ACK but plugged_size was not set to zero.
+//
+
+BOOLEAN SendUnplugAllRequest(IN WDFOBJECT WdfDevice)
+{
+	PDEVICE_CONTEXT devCtx = GetDeviceContext(WdfDevice);
+	VIO_SG              sg[2];
+	LARGE_INTEGER       timeout = { 0 };
+	BOOLEAN				do_notify = FALSE;
+	NTSTATUS            status;
+	PVOID buffer;
+	UINT len;
+	INT result = 0;
+	virtio_mem_config configuration;
+
+	//
+	// Fill unplug request and response command buffers with zeros before submission.
+	//
+
+	memset(devCtx->MemoryResponse, 0, sizeof(virtio_mem_resp));
+	memset(devCtx->plugRequest, 0, sizeof(virtio_mem_req));
+
+	//
+	// Build UNPLUG request command.
+	//
+
+	devCtx->plugRequest->type = VIRTIO_MEM_REQ_UNPLUG_ALL;
+
+	sg[0].physAddr = VirtIOWdfDeviceGetPhysicalAddress(&devCtx->VDevice.VIODevice,
+		devCtx->plugRequest);
+	sg[0].length = sizeof(virtio_mem_req);
+
+
+	sg[1].physAddr = VirtIOWdfDeviceGetPhysicalAddress(&devCtx->VDevice.VIODevice,
+		devCtx->MemoryResponse);
+	sg[1].length = sizeof(virtio_mem_resp);
+
+	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+	result = virtqueue_add_buf(devCtx->infVirtQueue, sg, 1, 1, devCtx, NULL, 0);
+
+	if (result < 0)
+	{
+		WdfSpinLockRelease(devCtx->infVirtQueueLock);
+
+		TraceEvents(TRACE_LEVEL_ERROR, DBG_HW_ACCESS,
+			"%s: Cannot add buffer = [0x%x]\n", __FUNCTION__, result);
+		return FALSE;
+	}
+	else
+	{
+		do_notify = virtqueue_kick_prepare(devCtx->infVirtQueue);
+	}
+
+	WdfSpinLockRelease(devCtx->infVirtQueueLock);
+
+	if (do_notify)
+	{
+		virtqueue_notify(devCtx->infVirtQueue);
+	}
+
+	//
+	// Wait for device response. If timeout return FALSE
+	//
+
+	timeout.QuadPart = Int32x32To64(1000, -10000);
+	status = KeWaitForSingleObject(
+		&devCtx->hostAcknowledge,
+		Executive,
+		KernelMode,
+		FALSE,
+		&timeout);
+
+	if (STATUS_TIMEOUT == status)
+	{
+		TraceEvents(TRACE_LEVEL_WARNING, DBG_HW_ACCESS, "%s TimeOut\n", 
+			__FUNCTION__);
+		
+		return FALSE;
+	}
+
+	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
+	if (virtqueue_has_buf(devCtx->infVirtQueue))
+	{
+		// 
+		// Remove buffer from the virtio queue.
+		//
+
+		buffer = virtqueue_get_buf(devCtx->infVirtQueue, &len);
+		if (buffer)
+		{
+			TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP,
+				"%s Buffer got, len = [%d]!\n", __FUNCTION__, len);
+		}
+		else
+		{
+			TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP,
+				"%s Buffer got, len = [%d]!\n", __FUNCTION__, len);
+
+			WdfSpinLockRelease(devCtx->infVirtQueueLock);
+			return FALSE;
+		}
+	}
+
+	WdfSpinLockRelease(devCtx->infVirtQueueLock);
+
+#ifdef __DUMP_RESPONSE__
+	DumpViomemResponseType(devCtx->MemoryResponse);
+#endif
+
+	if (devCtx->MemoryResponse->type == VIRTIO_MEM_RESP_ACK)
+	{
+		VirtIOWdfDeviceGet(&devCtx->VDevice, 0, &configuration, 
+			sizeof(virtio_mem_config));
+		
+		if (configuration.plugged_size != 0)
+		{
+			TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP,
+				"%s after VIRTIO_MEM_REQ_UNPLUG_ALL plugged_size is NOT 0!\n", 
+				__FUNCTION__);
+
+			return FALSE;
+		}
+		return TRUE;
+	}
+	else
+	{
+
+		TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP,
+			"%s sending VIRTIO_MEM_REQ_UNPLUG_ALL failed!\n", 
+			__FUNCTION__);
+
+	}
+
+	return FALSE;
+}
+
+
+//
 // Function sends VIRTIO_MEM_REQ_UNPLUG request to a device.
 //	
 //	Arguments: WdfDevice: device
@@ -142,7 +282,6 @@ VOID inline DumpViomemResponseType(virtio_mem_resp	*MemoryResponse)
 //								
 //  Return value: TRUE if plug operation finished with success
 //				  FALSE if timeout occured or device returned an error code
-//
 //
 
 BOOLEAN SendUnPlugRequest(
@@ -227,6 +366,10 @@ BOOLEAN SendUnPlugRequest(
 	WdfSpinLockAcquire(devCtx->infVirtQueueLock);
 	if (virtqueue_has_buf(devCtx->infVirtQueue))
 	{
+		// 
+		// Remove buffer from the virtio queue.
+		//
+
 		buffer = virtqueue_get_buf(devCtx->infVirtQueue, &len);
 		if (buffer)
 		{
@@ -245,16 +388,16 @@ BOOLEAN SendUnPlugRequest(
 
 	WdfSpinLockRelease(devCtx->infVirtQueueLock);
 
-#ifdef __DUMP_RESPONSE__
+#if 0
 	DumpViomemResponseType(devCtx->MemoryResponse);
 #endif
 
-	if (devCtx->MemoryResponse->type != VIRTIO_MEM_RESP_ACK)
+	if (devCtx->MemoryResponse->type == VIRTIO_MEM_RESP_ACK)
 	{
-		return FALSE;
+		return TRUE;
 	}
 
-	return TRUE;
+	return FALSE;
 }
 
 //
@@ -368,13 +511,13 @@ BOOLEAN SendPlugRequest(
 		return FALSE;
 	}
 
-#ifdef __DUMP_RESPONSE__
+#if 0
 	DumpViomemResponseType(devCtx->MemoryResponse);
 #endif
 
-	if (devCtx->MemoryResponse->type != VIRTIO_MEM_RESP_ACK)
+	if (devCtx->MemoryResponse->type == VIRTIO_MEM_RESP_ACK)
 	{
-		return FALSE;
+		return TRUE;
 	}
 	
 	return FALSE;
@@ -546,7 +689,6 @@ void DumpBitmapMemoryRanges(LONGLONG BaseAddress,
 		range.NumberOfBytes.QuadPart,
 		currentBitValue ? 'F' : 'E');
 }
-
 
 //
 // Function resizes given bitmap. Currently not used.
@@ -738,7 +880,7 @@ inline VOID AllocateMemoryRangeInMemoryBitmap(LONGLONG BaseAddress,
 }
 
 //
-// Function used add physical memory range to the system.
+// Function is used to add physical memory range to the system.
 //
 
 BOOLEAN VirtioMemAddPhysicalMemory(IN WDFOBJECT Device, virtio_mem_config *Configuration)
@@ -784,7 +926,6 @@ BOOLEAN VirtioMemAddPhysicalMemory(IN WDFOBJECT Device, virtio_mem_config *Confi
 		endAddress,
 		range.NumberOfBytes.QuadPart);
 
-	
 	//
 	// Calculate number of blocks to add and send plug request to the device.
 	//
@@ -824,7 +965,6 @@ BOOLEAN VirtioMemAddPhysicalMemory(IN WDFOBJECT Device, virtio_mem_config *Confi
 			&range,
 			&devCtx->memoryBitmapHandle,
 			(ULONG)Configuration->block_size);
-
 	}
 
 	return TRUE;
@@ -834,17 +974,18 @@ BOOLEAN VirtioMemAddPhysicalMemory(IN WDFOBJECT Device, virtio_mem_config *Confi
 // Function used to remove physical memory range from the system.
 //
 
-BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *Configuration)
+BOOLEAN VirtioMemRemovePhysicalMemory(IN WDFOBJECT Device, virtio_mem_config *Configuration)
 {
 	NTSTATUS status = STATUS_SUCCESS;
 	BOOLEAN result = FALSE;
 	PHYSICAL_MEMORY_RANGE range = { 0 };
 	PHYSICAL_ADDRESS highAddress = { 0 };
-	SIZE_T amount = 0;
-
+	LONGLONG sizeDifference = 0;
+	__virtio16 numberOfBlocks = 0;
 	PDEVICE_CONTEXT devCtx = GetDeviceContext(Device);
 	PHYSICAL_ADDRESS skip = { 0 };
 	PHYSICAL_ADDRESS address = { 0 };
+	ULONG rangeCount = 0;
 
 	address.QuadPart = (LONGLONG)Configuration->addr;
 
@@ -853,9 +994,7 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 		Configuration->addr + Configuration->plugged_size - 1);
 #endif
 	
-	__u64 sizeDifference = Configuration->plugged_size - Configuration->requested_size;
-
-	amount = (LONGLONG)sizeDifference;
+	sizeDifference = (LONGLONG)(Configuration->plugged_size - Configuration->requested_size);
 
 	//
 	// Find the allocated block of memory that is less or equal to the size difference.
@@ -876,19 +1015,23 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 	// Try to remove a memory range. 
 	// 
 	// Notes: 
-	//	      -- it may be not possible to remove the memory range, because
-	//	        the whole range can be already used by the system.
-	//		  -- for removal an undocumented flag MM_ALLOCATE_AND_HOT_REMOVE is used
+	//	      1. it may be not possible to remove the memory range, because
+	//	         the whole range can be already used by the system.
+	//		  2. for removal an undocumented flag MM_ALLOCATE_AND_HOT_REMOVE is used;
 	//			 the flag is not mentioned on MSDN but is used by Hyper-V dynamic 
-	//		     memory driver and is defined in one of WDK header files
-	//		  -- 'skip' is set to 0x200000 which means that ranges must to be 
-	//			aligned to 0x20000 
-	//
+	//		     memory driver and the flag is defined in one of the WDK header files
+	//		  3. "skip" is set to block_size which means that range address is aligned
+	//			 to this value
+	//			 
 
-	skip.QuadPart = 0x200000;
+	skip.QuadPart = Configuration->block_size;
 
 	ULONG flagsContigRemove = MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS
 		| MM_ALLOCATE_AND_HOT_REMOVE;
+
+	//
+	// Trace information about block to be removed.
+	//
 
 	LONGLONG startAddress = range.BaseAddress.QuadPart;
 	LONGLONG endAddress = startAddress + (range.NumberOfBytes.QuadPart - 1);
@@ -902,7 +1045,8 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 	highAddress.QuadPart = range.BaseAddress.QuadPart + range.NumberOfBytes.QuadPart;
 
 	//
-	// Call the removal procedure which is hidden in MmAllocateNodePagesForMdlEx.
+	// Call the removal procedure which is hidden under MmAllocateNodePagesForMdlEx
+	// name.
 	//
 
 	PMDL removedMemoryMdl = MmAllocateNodePagesForMdlEx(range.BaseAddress,
@@ -915,24 +1059,26 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 	);
 
 	//
-	// If memory has been removed convert MDLs returned by MmAllocateNodePagesForMdlEx call
-	// to memory ranges, inform the device about removal and then update the bitmap representation
-	// of memory blocks to reflect the changes.
-	//
-	// To do: add revert operation to removal logic if it was not possible to inform the device about
-	// the changes.
+	// If memory has been removed convert MDLs returned by MmAllocateNodePagesForMdlEx
+	// call to memory ranges, inform the device about removal and then update the 
+	// bitmap representation of memory blocks to reflect the change.
 	//
 	
 	if (removedMemoryMdl)
 	{
+
+#if 0
 		DumpSystemMemoryRanges(Configuration->addr,
 			Configuration->addr + Configuration->plugged_size - 1);
+#endif
 
-		ULONG rangeCount = GetMemoryRangesFromMdl(removedMemoryMdl, devCtx->MemoryRange);
+		rangeCount = GetMemoryRangesFromMdl(removedMemoryMdl, devCtx->MemoryRange);
 
 		for (ULONG i = 0; i < rangeCount; i++)
 		{
-			__virtio16 numberOfBlocks = (__virtio16)(devCtx->MemoryRange[i].NumberOfBytes.QuadPart / Configuration->block_size);
+			numberOfBlocks = (__virtio16)
+				(devCtx->MemoryRange[i].NumberOfBytes.QuadPart / Configuration->block_size);
+			
 			if (SendUnPlugRequest(Device, devCtx->MemoryRange[i].BaseAddress.QuadPart, numberOfBlocks))
 			{
 				TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "HotRemove address [0x%I64x] len[0x%x]\n",
@@ -947,21 +1093,128 @@ BOOLEAN VirtioMemRemovePhysicalMemory0(IN WDFOBJECT Device, virtio_mem_config *C
 			else
 			{
 				//
-				// Fix the scenario when it was not possible to inform device about removal.
+				// If it was not possible to inform the device about range removal then 
+				// revert the operation.
 				//
+
+				status = MmAddPhysicalMemory(&devCtx->MemoryRange[i].BaseAddress, 
+					&devCtx->MemoryRange[i].NumberOfBytes);
+				
+				if (!NT_SUCCESS(status))
+				{
+					// 
+					// It's not clear what to do if this operation fails?
+					//
+
+					TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP,
+						"MmAddPhysicalMemory failed\n");
+
+				}		
 			}
 		}
 	}
 
 	//
-	// Return status OK, as removal may fail because the memory may be already used by the system.
+	// Return status OK. Removal may fail because the memory may be already used by the system,
+	// but this situation (for obvious reasons) is not considered an error.
 	//
 
 	return TRUE;
 }
 
 //
-// Main worker thread that processed virtio-mem configuration changes.
+// Function returns TRUE if a given memory range is on the list of system
+// memory ranges. Otherwise it returns FALSE.
+//
+
+BOOLEAN IsMemoryRangeInUse(LONGLONG StartAddress, LONGLONG Size)
+{
+	PPHYSICAL_MEMORY_RANGE ranges;
+	ULONG currentRange = 0;
+
+	ranges = MmGetPhysicalMemoryRanges();
+
+	if (ranges)
+	{
+		TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "start          end      size \n");
+		for (currentRange = 0; ranges[currentRange].NumberOfBytes.QuadPart != 0; 
+			currentRange++)
+		{
+			LONGLONG startAddress = ranges[currentRange].BaseAddress.QuadPart;
+			LONGLONG endAddress = startAddress + (ranges[currentRange].NumberOfBytes.QuadPart - 1);
+
+			if (startAddress >= StartAddress && endAddress <= Size)
+			{
+				//
+				// Check if range is on the list of ranges allocated by the OS.
+				//
+
+				TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, 
+					"Range 0x%.8I64x 0x%.8I64x 0x%.8I64x in USE!\n",
+					startAddress,
+					endAddress,
+					ranges[currentRange].NumberOfBytes.QuadPart);
+
+				ExFreePool(ranges);
+				return TRUE;
+			}
+		}
+
+		//
+		// Free memory allocated for ranges structures.
+		//
+
+		ExFreePool(ranges);
+	}
+	else
+	{
+		//
+		// It should never happen as there is ALWAYS at least 
+		// range used by the system.
+		//
+
+		TraceEvents(TRACE_LEVEL_ERROR, DBG_PNP,
+			"MmGetPhysicalMemoryRanges returned 0 ranges!");
+	}
+
+	return FALSE;
+}
+
+//
+// Function synchronizes host virtio-mem device and guest driver during 
+// initialization.
+// 
+// Notes:
+//		   1. According to virtio-spec, if after reset driver detects that memory
+//		   is plugged (plugged_size > 0) the driver should: unplug memory or 
+//         issue a STATE command. In this function UNPLUG ALL is issued.
+//  
+//		   2. According to section 5.15.6.2 of virtio spec[Device Requirements: 
+//	       Device Operation], "the device should unplug all memory blocks 
+//		   during system resets". So this code is for hypothetical scenario 
+//		   because after reset plugged_size will be always set to zero.
+//
+
+BOOLEAN SynchronizeDeviceAndDriverMemory(IN WDFOBJECT Device, 
+	virtio_mem_config *Config)
+{
+	PDEVICE_CONTEXT devCtx = GetDeviceContext(Device);
+	BOOLEAN result = FALSE;
+	if (devCtx)
+	{
+		//
+		// Send request to unplug all memory blocks
+		//
+
+		result = SendUnplugAllRequest(Device);
+		return result;
+	}
+
+	return FALSE;
+} 
+
+//
+// Main worker thread that processes init and virtio-mem configuration changes.
 //
 
 VOID ViomemWorkerThread(
@@ -970,7 +1223,7 @@ VOID ViomemWorkerThread(
 {
 	NTSTATUS status = STATUS_SUCCESS;
 	virtio_mem_config configReqest = { 0 };
-
+	BOOLEAN result = FALSE;
 	WDFOBJECT Device = (WDFOBJECT)pContext;
 	PDEVICE_CONTEXT devCtx = GetDeviceContext(Device);
 
@@ -987,6 +1240,7 @@ VOID ViomemWorkerThread(
 				// 
 				// If shutdown requested finish processing loop and finish this thread.
 				//
+				
 				break;
 			}
 			else
@@ -1001,57 +1255,95 @@ VOID ViomemWorkerThread(
 
 				VirtIOWdfDeviceGet(&devCtx->VDevice, 0, &configReqest, sizeof(configReqest));
 
-				TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, "Memory config: address [%I64x] requested_size [%I64x] plugged_size[%I64x]\n",
+				TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP, 
+					"Memory config: address [%I64x] requested_size [%I64x] plugged_size[%I64x]\n",
 					configReqest.addr,
 					configReqest.requested_size,
 					configReqest.plugged_size);
 
-				// 
-				// If bitmap buffer representing memory blocks is empty, 
-				// it means that we are starting, so we have to allocate memory 
-				// for the bitmap representing memory blocks (memory region)
-				//
-
-				if (devCtx->bitmapBuffer == NULL)
+				if (devCtx->state == VIOMEM_PROCESS_STATE_INIT)
 				{
-					//
-					// Calculate the size of bitmap representing memory region and 
-					// try to allocate memory for the bitmap.
-					//
-					// Note: each bit represents one block of memory where size of block 
-					//	     is equal to block_size field of VIRTIO_MEM_CONFIG.
+					// 
+					// If bitmap buffer representing memory blocks is empty, 
+					// it means that we are starting, so we have to allocate memory 
+					// for the bitmap representing memory blocks (memory region)
 					//
 
-					ULONG bitmapSizeInBits = (ULONG)(configReqest.region_size / configReqest.block_size);
-
-					devCtx->bitmapBuffer = (ULONG*)ExAllocatePoolWithTag(NonPagedPool,
-						bitmapSizeInBits >> 3,
-						VIRTIO_MEM_POOL_TAG);
-
-					//
-					// If the memory was allocated init bitmap: assign the bitmap buffer to 
-					// handle and then reset bitmap bits to zero.
-					// If operation failed then try to add an event informing about failure and
-					// finish the thread processing.
-					//
-
-					if (devCtx->bitmapBuffer != NULL)
-					{
-						RtlInitializeBitMap(&devCtx->memoryBitmapHandle, devCtx->bitmapBuffer,
-							bitmapSizeInBits);
-
-						RtlClearAllBits(&devCtx->memoryBitmapHandle);
-					}
-					else
+					if (devCtx->bitmapBuffer == NULL)
 					{
 						//
-						// Memory allocation failure handler.
+						// Calculate the size of bitmap representing memory region and 
+						// try to allocate memory for the bitmap.
 						//
-						TraceEvents(TRACE_LEVEL_FATAL, DBG_PNP,
-							"Can't allocate memory for memory bitmap, exiting thread!\n");
-						break;
+						// Note: each bit represents one block of memory where size of block 
+						//	     is equal to block_size field of VIRTIO_MEM_CONFIG.
+						//
+
+						ULONG bitmapSizeInBits = (ULONG)(configReqest.region_size / configReqest.block_size);
+
+						devCtx->bitmapBuffer = (ULONG*)ExAllocatePoolWithTag(NonPagedPool,
+							bitmapSizeInBits >> 3,
+							VIRTIO_MEM_POOL_TAG);
+
+						//
+						// If the memory was allocated init bitmap: assign the bitmap buffer to 
+						// handle and then reset bitmap bits to zero.
+						// If operation failed then try to add an event informing about failure and
+						// finish the thread processing.
+						//
+
+						if (devCtx->bitmapBuffer != NULL)
+						{
+							RtlInitializeBitMap(&devCtx->memoryBitmapHandle, devCtx->bitmapBuffer,
+								bitmapSizeInBits);
+
+							RtlClearAllBits(&devCtx->memoryBitmapHandle);
+						}
+						else
+						{
+							//
+							// Memory allocation failure handler.
+							//
+
+							TraceEvents(TRACE_LEVEL_FATAL, DBG_PNP,
+								"Can't allocate memory for memory bitmap, exiting thread!\n");
+							break;
+						}
 					}
+
+					//
+					// If memory is plugged then issue UNPLUG ALL request.
+					//
+
+					if (configReqest.plugged_size > 0)
+					{
+						TraceEvents(TRACE_LEVEL_INFORMATION, DBG_PNP,
+							"Plugged memory detected during init, syncing...\n");
+
+						result = SynchronizeDeviceAndDriverMemory(Device, &configReqest);
+						if (result == FALSE)
+						{
+							//
+							// Synchronization failed so quit this thread.
+							//
+
+							break;
+						}
+					}
+
+					// 
+					// Change state to processing continue processing.
+					//
+
+					devCtx->state = VIOMEM_PROCESS_STATE_RUNNING;
+					continue;
 				}
+
+				//
+				// The host device may send configuration update even if 
+				// nothing changed (requested_size == plugged_size) so 
+				// in this condition will be ignored.
+				//
 
 				if (configReqest.requested_size > configReqest.plugged_size)
 				{
@@ -1067,8 +1359,9 @@ VOID ViomemWorkerThread(
 					// Try to remove memory from the system.
 					//
 
-					VirtioMemRemovePhysicalMemory0(Device, &configReqest);
+					VirtioMemRemovePhysicalMemory(Device, &configReqest);
 				}
+
 			}
 		}
 
